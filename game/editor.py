@@ -90,11 +90,11 @@ class LevelEditor:
         # Панель-подсказка
         pygame.draw.rect(self.screen, settings.COLOR_PANEL,
                          pygame.Rect(0, 0, settings.SCREEN_WIDTH, settings.TOP_PANEL))
-        ui.draw_text(self.screen, "Редактор уровней", 26, (16, 8),
+        ui.draw_text(self.screen, "Редактор уровней", 24, (16, 6),
                      color=settings.COLOR_ACCENT)
         ui.draw_text(self.screen,
-                     "ЛКМ — стена | ПКМ — старт | C — очистить | S — сохранить | ESC — выход",
-                     16, (16, 38), color=settings.COLOR_TEXT_DIM)
+                     "ЛКМ стена · ПКМ старт · C очистить · S сохранить · ESC выход",
+                     14, (16, 38), color=settings.COLOR_TEXT_DIM)
 
     def _show_message(self, text):
         """Короткое сообщение на пару секунд."""

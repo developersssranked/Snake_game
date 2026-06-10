@@ -53,8 +53,18 @@ class Level:
     def load(cls, path):
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        walls = {tuple(c) for c in data.get("walls", [])}
-        start = tuple(data.get("start_pos", (settings.GRID_COLS // 2, settings.GRID_ROWS // 2)))
+
+        # Оставляем только клетки в пределах сетки — на случай, если уровень
+        # сохранён при другом (большем) размере поля.
+        def in_bounds(cell):
+            c, r = cell
+            return 0 <= c < settings.GRID_COLS and 0 <= r < settings.GRID_ROWS
+
+        walls = {tuple(c) for c in data.get("walls", []) if in_bounds(tuple(c))}
+        default_start = (settings.GRID_COLS // 2, settings.GRID_ROWS // 2)
+        start = tuple(data.get("start_pos", default_start))
+        if not in_bounds(start):
+            start = default_start
         return cls(name=data.get("name", "Свой уровень"), walls=walls, start_pos=start)
 
     @classmethod

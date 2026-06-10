@@ -1,25 +1,40 @@
-"""Игровая сцена: основной игровой цикл «Змейки»."""
+"""Игровая сцена: основной игровой цикл «Змейки».
 
-import math
+Партия идёт по таймеру. На поле появляются разные бонусы — см. модуль
+`bonuses`. Игровой цикл вызывает у бонуса полиморфный `apply_effect`,
+а конкретное поведение (рост, взрыв стен, броня, яд, время и т.д.)
+определяется классом бонуса.
+"""
+
 import random
 
 import pygame
 
-from . import settings, ui
-from .apples import NormalApple, GoldenApple, PoisonApple
+from . import assets, settings, ui
+from .bonuses import (
+    NormalApple, GoldenApple, PoisonApple, Bomb, Armor,
+    Antidote, SpeedUp, SlowDown, Clock, Poop,
+)
 from .database import ScoreDatabase
 from .level import Level
 from .snake import Snake
+from .wall import Wall
 
 
 class GameScene:
     """Одна партия игры на заданном уровне."""
 
-    # Веса появления яблок: обычные — часто, отравленные — реже, золотые — редко
-    APPLE_WEIGHTS = [
-        (NormalApple, 60),
-        (PoisonApple, 30),
-        (GoldenApple, 10),
+    # Веса появления бонусов
+    BONUS_WEIGHTS = [
+        (NormalApple, 42),
+        (PoisonApple, 16),
+        (GoldenApple, 7),
+        (Bomb, 6),
+        (Armor, 6),
+        (Antidote, 5),
+        (SpeedUp, 4),
+        (SlowDown, 4),
+        (Clock, 4),
     ]
 
     def __init__(self, screen, clock, level=None, db=None):
@@ -29,23 +44,42 @@ class GameScene:
         self.db = db or ScoreDatabase()
 
         self.snake = Snake(self.level.start_pos)
-        self.walls = self.level.build_walls()
-        self.apples = []          # яблоки, лежащие на поле прямо сейчас
+        # Стены — рабочая копия: бомба/броня их разрушают, не трогая файл уровня
+        self.wall_cells = set(self.level.wall_cells)
+        self._rebuild_walls()
+
+        self.apples = []              # бонусы на поле сейчас
+        self.poops = []               # какашки (препятствия)
+        self.poop_cells = set()
         self.score = 0
+
         self.move_timer = 0.0
-        self._anim = 0.0          # общее время для анимаций
+        self._anim = 0.0
+        self.time_left = settings.START_TIME
+
+        # Эффект скорости
+        self._speed_factor = 1.0
+        self._speed_timer = 0.0
+        # Сколько ещё какашек уронит отравленная змейка
+        self._poop_steps_left = 0
+        self._over_reason = ""
+
         self.spawn_apples()
 
     # --- Вспомогательное ---
+    def _rebuild_walls(self):
+        self.walls = [Wall(cell) for cell in self.wall_cells]
+
     def occupied_cells(self):
-        """Все занятые клетки: тело змейки + стены + лежащие яблоки."""
+        """Все занятые клетки: змейка + стены + какашки + бонусы."""
         cells = set(self.snake.body)
-        cells |= self.level.wall_cells
+        cells |= self.wall_cells
+        cells |= self.poop_cells
         cells |= {apple.position for apple in self.apples}
         return cells
 
-    def _place_apple(self, apple_class):
-        """Положить яблоко заданного типа в случайную свободную клетку."""
+    def _place_apple(self, bonus_class):
+        """Положить бонус заданного типа в случайную свободную клетку."""
         free = [
             (c, r)
             for c in range(settings.GRID_COLS)
@@ -54,25 +88,54 @@ class GameScene:
         ]
         if not free:
             return
-        self.apples.append(apple_class(random.choice(free)))
+        self.apples.append(bonus_class(random.choice(free)))
 
     def spawn_apples(self):
-        """Создать новую «порцию» яблок.
+        """Создать новую «порцию» бонусов.
 
-        Тип выбирается по весу. Если выпало отравленное, рядом сразу
-        кладётся обычное — чтобы игрок не был обязан есть отравленное.
-        Съедание любого яблока очищает всю порцию (см. _step), поэтому
-        «парное» обычное исчезает вместе с отравленным, и наоборот.
+        Тип выбирается по весу. Опасные бонусы (яд, стена-ловушка) кладутся
+        вместе с обычным яблоком — у игрока всегда есть безопасный выбор.
+        Съедание любого бонуса очищает всю порцию (см. _step).
         """
         self.apples = []
 
-        # Полиморфное создание: выбираем класс по весу
-        classes, weights = zip(*self.APPLE_WEIGHTS)
+        classes, weights = zip(*self.BONUS_WEIGHTS)
         chosen = random.choices(classes, weights=weights, k=1)[0]
         self._place_apple(chosen)
 
-        if chosen is PoisonApple:
+        if chosen.hazard:
             self._place_apple(NormalApple)  # безопасная альтернатива
+
+    # --- Действия, которые вызывают бонусы (через apply_effect) ---
+    def explode_walls(self, center, radius):
+        """Убрать стены в радиусе `radius` от центра. Вернуть их число."""
+        cx, cy = center
+        doomed = {
+            (c, r) for (c, r) in self.wall_cells
+            if (c - cx) ** 2 + (r - cy) ** 2 <= radius ** 2
+        }
+        self.wall_cells -= doomed
+        self._rebuild_walls()
+        return len(doomed)
+
+    def add_time(self, seconds):
+        self.time_left += seconds
+
+    def set_speed(self, factor, duration):
+        self._speed_factor = factor
+        self._speed_timer = duration
+
+    def poison_snake(self):
+        """Отравить змейку: включить статус и запустить «дорожку» какашек."""
+        self.snake.add_status("poison", settings.POISON_DURATION)
+        self._poop_steps_left = settings.POOP_COUNT
+
+    def stop_poop(self):
+        self._poop_steps_left = 0
+
+    def _game_over(self, reason):
+        self._over_reason = reason
+        return True
 
     # --- Основной цикл ---
     def run(self):
@@ -95,16 +158,29 @@ class GameScene:
                         self._handle_direction(event.key)
 
             if not game_over:
-                self.move_timer += dt
-                if self.move_timer >= settings.MOVE_EVERY:
-                    self.move_timer = 0.0
-                    game_over = self._step()
+                # Таймеры эффектов и партии
+                self.snake.tick_statuses(dt)
+                if self._speed_timer > 0:
+                    self._speed_timer -= dt
+                    if self._speed_timer <= 0:
+                        self._speed_factor = 1.0
+
+                self.time_left -= dt
+                if self.time_left <= 0:
+                    self.time_left = 0
+                    game_over = self._game_over("Время вышло")
+
+                if not game_over:
+                    self.move_timer += dt
+                    interval = settings.MOVE_EVERY * self._speed_factor
+                    if self.move_timer >= interval:
+                        self.move_timer = 0.0
+                        game_over = self._step()
 
             self._draw(game_over)
             pygame.display.flip()
 
             if game_over:
-                # Небольшая пауза, затем экран ввода имени и сохранение
                 self._game_over_sequence()
                 running = False
 
@@ -120,26 +196,52 @@ class GameScene:
         if key in mapping:
             self.snake.set_direction(mapping[key])
 
+    def _drop_poop(self):
+        """Уронить какашку на освободившейся хвостом клетке."""
+        cell = self.snake.last_tail
+        if cell is None or cell in self.poop_cells or cell in self.wall_cells:
+            return
+        self.poops.append(Poop(cell))
+        self.poop_cells.add(cell)
+        self._poop_steps_left -= 1
+
     def _step(self):
         """Один шаг логики. Возвращает True, если партия окончена."""
         self.snake.update(self)
+        head = self.snake.head
 
-        # Столкновения со стеной поля, собой или препятствием
-        if (
-            self.snake.hits_wall_bounds()
-            or self.snake.hits_self()
-            or self.snake.head in self.level.wall_cells
-        ):
-            return True
+        # Отравленная змейка роняет какашки (если нет антидота)
+        if self._poop_steps_left > 0 and not self.snake.has_status("antidote"):
+            self._drop_poop()
 
-        # Съедено ли какое-то яблоко из порции? Вызов apply_effect —
-        # пример полиморфизма: код одинаков для любого типа яблока.
+        # Границы поля и собственное тело — смерть всегда
+        if self.snake.hits_wall_bounds():
+            return self._game_over("Врезались в границу поля")
+        if self.snake.hits_self():
+            return self._game_over("Врезались в себя")
+
+        # Стена: под бронёй ломаем её, иначе — смерть
+        if head in self.wall_cells:
+            if self.snake.has_status("armor"):
+                self.wall_cells.discard(head)
+                self._rebuild_walls()
+            else:
+                return self._game_over("Врезались в стену")
+
+        # Какашка: под антидотом безопасно убираем, иначе — смерть
+        if head in self.poop_cells:
+            if self.snake.has_status("antidote"):
+                self.poop_cells.discard(head)
+                self.poops = [p for p in self.poops if p.position != head]
+            else:
+                return self._game_over("Съели какашку")
+
+        # Съеден ли бонус? Полиморфный вызов apply_effect — поведение
+        # зависит от конкретного класса бонуса.
         for apple in self.apples:
-            if self.snake.head == apple.position:
+            if head == apple.position:
                 self.score += apple.apply_effect(self.snake, self)
                 self.score = max(0, self.score)
-                # Очищаем всю порцию: «парное» яблоко исчезает вместе
-                # со съеденным, затем кладём новую порцию.
                 self.spawn_apples()
                 break
 
@@ -147,12 +249,13 @@ class GameScene:
 
     # --- Отрисовка ---
     def _draw(self, game_over):
-        # Фон поля — лёгкий градиент только под игровым полем
         ui.draw_background(self.screen)
         self._draw_grid()
 
         for wall in self.walls:
             wall.draw(self.screen)
+        for poop in self.poops:
+            poop.draw(self.screen)
         for apple in self.apples:
             apple.draw(self.screen, pulse=self._anim * 4)
         self.snake.draw(self.screen)
@@ -160,21 +263,17 @@ class GameScene:
         self._draw_panel()
 
         if game_over:
-            self._draw_overlay("Игра окончена")
+            self._draw_overlay()
 
     def _draw_grid(self):
         for c in range(settings.GRID_COLS + 1):
             x = c * settings.CELL_SIZE
-            pygame.draw.line(
-                self.screen, settings.COLOR_GRID,
-                (x, settings.TOP_PANEL), (x, settings.SCREEN_HEIGHT),
-            )
+            pygame.draw.line(self.screen, settings.COLOR_GRID,
+                             (x, settings.TOP_PANEL), (x, settings.SCREEN_HEIGHT))
         for r in range(settings.GRID_ROWS + 1):
             y = r * settings.CELL_SIZE + settings.TOP_PANEL
-            pygame.draw.line(
-                self.screen, settings.COLOR_GRID,
-                (0, y), (settings.PLAY_WIDTH, y),
-            )
+            pygame.draw.line(self.screen, settings.COLOR_GRID,
+                             (0, y), (settings.PLAY_WIDTH, y))
 
     def _draw_panel(self):
         ui.draw_vertical_gradient(
@@ -185,24 +284,64 @@ class GameScene:
                          (0, settings.TOP_PANEL - 1),
                          (settings.SCREEN_WIDTH, settings.TOP_PANEL - 1), 2)
 
-        ui.draw_text(self.screen, f"Счёт: {self.score}", 28, (16, 10),
+        ui.draw_text(self.screen, f"Счёт: {self.score}", 26, (16, 8),
                      color=settings.COLOR_ACCENT, bold=True)
-        ui.draw_text(self.screen, f"Длина: {self.snake.length}", 20, (16, 38),
+        ui.draw_text(self.screen, f"Длина: {self.snake.length}", 18, (16, 38),
                      color=settings.COLOR_TEXT_DIM)
 
-        # Название уровня выровнено по правому краю
-        text = f"Уровень: {self.level.name}"
-        w = ui.get_font(20).size(text)[0]
-        ui.draw_text(self.screen, text, 20, (settings.SCREEN_WIDTH - 16 - w, 22),
-                     color=settings.COLOR_TEXT_DIM)
+        # Таймер (справа сверху), краснеет под конец
+        secs = int(self.time_left)
+        time_color = settings.COLOR_TIME_LOW if secs <= 10 else settings.COLOR_TEXT
+        time_text = f"Время: {secs}"
+        w = ui.get_font(26, bold=True).size(time_text)[0]
+        ui.draw_text(self.screen, time_text, 26, (settings.SCREEN_WIDTH - 16 - w, 8),
+                     color=time_color, bold=True)
 
-    def _draw_overlay(self, text):
+        level_text = f"Уровень: {self.level.name}"
+        lw = ui.get_font(18).size(level_text)[0]
+        ui.draw_text(self.screen, level_text, 18,
+                     (settings.SCREEN_WIDTH - 16 - lw, 40), color=settings.COLOR_TEXT_DIM)
+
+        self._draw_statuses()
+
+    def _draw_statuses(self):
+        """Иконки активных эффектов с остатком времени, по центру панели."""
+        effects = []
+        if self.snake.has_status("armor"):
+            effects.append(("shield.png", self.snake.status_remaining("armor")))
+        if self.snake.has_status("antidote"):
+            effects.append(("pill.png", self.snake.status_remaining("antidote")))
+        if self.snake.has_status("poison"):
+            effects.append(("skull.png", self.snake.status_remaining("poison")))
+        if self._speed_timer > 0:
+            icon = "fast.png" if self._speed_factor < 1 else "slow.png"
+            effects.append((icon, self._speed_timer))
+
+        if not effects:
+            return
+
+        slot = 64
+        total = len(effects) * slot
+        x = settings.SCREEN_WIDTH // 2 - total // 2
+        for icon, remaining in effects:
+            img = assets.image(icon, 26)
+            if img:
+                self.screen.blit(img, img.get_rect(center=(x + 14, 22)))
+            ui.draw_text(self.screen, f"{remaining:.0f}s", 16, (x + 30, 14),
+                         color=settings.COLOR_TEXT_DIM)
+            x += slot
+
+    def _draw_overlay(self):
         overlay = pygame.Surface((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT), pygame.SRCALPHA)
         overlay.fill((10, 11, 18, 200))
         self.screen.blit(overlay, (0, 0))
-        ui.draw_text(self.screen, text, 48,
-                     (settings.SCREEN_WIDTH // 2, settings.SCREEN_HEIGHT // 2 - 20),
+        cx = settings.SCREEN_WIDTH // 2
+        ui.draw_text(self.screen, "Игра окончена", 48, (cx, settings.SCREEN_HEIGHT // 2 - 30),
                      color=settings.COLOR_NORMAL_APPLE, center=True, bold=True)
+        if self._over_reason:
+            ui.draw_text(self.screen, self._over_reason, 24,
+                         (cx, settings.SCREEN_HEIGHT // 2 + 16),
+                         color=settings.COLOR_TEXT_DIM, center=True)
 
     def _game_over_sequence(self):
         """Показать экран окончания, спросить имя и сохранить результат."""
@@ -232,17 +371,20 @@ class GameScene:
 
             cx = settings.SCREEN_WIDTH // 2
             ui.draw_background(self.screen)
-            ui.draw_text(self.screen, "Игра окончена!", 46, (cx, 120),
+            ui.draw_text(self.screen, "Игра окончена!", 46, (cx, 110),
                          color=settings.COLOR_NORMAL_APPLE, center=True, bold=True)
-            ui.draw_text(self.screen, f"Ваш счёт: {self.score}", 34, (cx, 185),
+            if self._over_reason:
+                ui.draw_text(self.screen, self._over_reason, 22, (cx, 152),
+                             color=settings.COLOR_TEXT_DIM, center=True)
+            ui.draw_text(self.screen, f"Ваш счёт: {self.score}", 34, (cx, 200),
                          color=settings.COLOR_ACCENT, center=True, bold=True)
-            ui.draw_text(self.screen, f"Длина змейки: {self.snake.length}", 22, (cx, 230),
+            ui.draw_text(self.screen, f"Длина змейки: {self.snake.length}", 22, (cx, 242),
                          color=settings.COLOR_TEXT_DIM, center=True)
-            ui.draw_text(self.screen, "Введите имя и нажмите Enter:", 24, (cx, 290),
+            ui.draw_text(self.screen, "Введите имя и нажмите Enter:", 24, (cx, 300),
                          color=settings.COLOR_TEXT_DIM, center=True)
 
             box = pygame.Rect(0, 0, 340, 52)
-            box.center = (cx, 340)
+            box.center = (cx, 350)
             pygame.draw.rect(self.screen, settings.COLOR_BUTTON, box, border_radius=10)
             pygame.draw.rect(self.screen, settings.COLOR_ACCENT, box, width=2, border_radius=10)
             caret = "|" if int(self._anim * 2) % 2 == 0 else " "

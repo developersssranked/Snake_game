@@ -5,6 +5,7 @@ import math
 import pygame
 
 from . import assets, settings, ui
+from .bonuses import LEGEND
 from .database import ScoreDatabase
 from .editor import LevelEditor
 from .game import GameScene
@@ -22,14 +23,15 @@ class Menu:
         self._time = 0.0
 
         cx = settings.SCREEN_WIDTH // 2
-        w, h = 340, 58
-        gap = 74
-        top = 250
+        w, h = 320, 48
+        gap = 58
+        top = 150
         self.buttons = [
             ui.Button((cx - w // 2, top, w, h), "Играть", self._play, primary=True),
-            ui.Button((cx - w // 2, top + gap, w, h), "Редактор уровней", self._open_editor),
-            ui.Button((cx - w // 2, top + gap * 2, w, h), "Таблица рейтинга", self._show_scores),
-            ui.Button((cx - w // 2, top + gap * 3, w, h), "Выход", self._quit),
+            ui.Button((cx - w // 2, top + gap, w, h), "Бонусы (справка)", self._show_help),
+            ui.Button((cx - w // 2, top + gap * 2, w, h), "Редактор уровней", self._open_editor),
+            ui.Button((cx - w // 2, top + gap * 3, w, h), "Таблица рейтинга", self._show_scores),
+            ui.Button((cx - w // 2, top + gap * 4, w, h), "Выход", self._quit),
         ]
 
     def run(self):
@@ -51,16 +53,16 @@ class Menu:
         cx = settings.SCREEN_WIDTH // 2
         # Декоративные иконки слева/справа от заголовка
         bob = int(6 * math.sin(self._time * 2))
-        apple = assets.image("apple_red.png", 56)
-        star = assets.image("star.png", 48)
+        apple = assets.image("apple_red.png", 48)
+        star = assets.image("star.png", 42)
         if apple:
-            self.screen.blit(apple, apple.get_rect(center=(cx - 170, 110 + bob)))
+            self.screen.blit(apple, apple.get_rect(center=(cx - 140, 70 + bob)))
         if star:
-            self.screen.blit(star, star.get_rect(center=(cx + 170, 110 - bob)))
+            self.screen.blit(star, star.get_rect(center=(cx + 140, 70 - bob)))
 
-        ui.draw_text(self.screen, "ЗМЕЙКА", 66, (cx, 110),
+        ui.draw_text(self.screen, "ЗМЕЙКА", 58, (cx, 70),
                      color=settings.COLOR_ACCENT, center=True, bold=True)
-        ui.draw_text(self.screen, "курсовая работа", 22, (cx, 165),
+        ui.draw_text(self.screen, "курсовая работа", 20, (cx, 112),
                      color=settings.COLOR_TEXT_DIM, center=True)
 
         for button in self.buttons:
@@ -83,6 +85,44 @@ class Menu:
     def _quit(self):
         self._running = False
 
+    # --- Справка по бонусам ---
+    def _show_help(self):
+        active = True
+        while active:
+            self.clock.tick(settings.FPS)
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    raise SystemExit
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    active = False
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    active = False
+
+            ui.draw_background(self.screen)
+            cx = settings.SCREEN_WIDTH // 2
+            ui.draw_text(self.screen, "Бонусы и эффекты", 34, (cx, 34),
+                         color=settings.COLOR_ACCENT, center=True, bold=True)
+
+            y = 70
+            row_h = 40
+            for sprite, title, desc in LEGEND:
+                row_rect = pygame.Rect(20, y, settings.SCREEN_WIDTH - 40, row_h - 5)
+                pygame.draw.rect(self.screen, (26, 29, 42), row_rect, border_radius=8)
+                img = assets.image(sprite, 26)
+                if img:
+                    self.screen.blit(img, img.get_rect(center=(44, y + (row_h - 5) // 2)))
+                ui.draw_text(self.screen, title, 19, (70, y + 3),
+                             color=settings.COLOR_TEXT, bold=True)
+                ui.draw_text(self.screen, desc, 15, (70, y + 21),
+                             color=settings.COLOR_TEXT_DIM)
+                y += row_h
+
+            ui.draw_text(self.screen, "ESC / клик — назад", 18,
+                         (cx, settings.SCREEN_HEIGHT - 26),
+                         color=settings.COLOR_TEXT_DIM, center=True)
+            pygame.display.flip()
+
     # --- Таблица рейтинга ---
     def _show_scores(self):
         rows = self.db.top_scores(limit=10)
@@ -100,34 +140,34 @@ class Menu:
 
             ui.draw_background(self.screen)
             cx = settings.SCREEN_WIDTH // 2
-            ui.draw_text(self.screen, "Таблица рейтинга", 44, (cx, 60),
+            ui.draw_text(self.screen, "Таблица рейтинга", 38, (cx, 44),
                          color=settings.COLOR_ACCENT, center=True, bold=True)
 
             # Заголовки колонок
-            head_y = 130
-            ui.draw_text(self.screen, "#", 20, (44, head_y), color=settings.COLOR_TEXT_DIM)
-            ui.draw_text(self.screen, "Игрок", 20, (96, head_y), color=settings.COLOR_TEXT_DIM)
-            ui.draw_text(self.screen, "Очки", 20, (300, head_y), color=settings.COLOR_TEXT_DIM)
-            ui.draw_text(self.screen, "Уровень", 20, (392, head_y), color=settings.COLOR_TEXT_DIM)
+            head_y = 100
+            ui.draw_text(self.screen, "#", 18, (38, head_y), color=settings.COLOR_TEXT_DIM)
+            ui.draw_text(self.screen, "Игрок", 18, (78, head_y), color=settings.COLOR_TEXT_DIM)
+            ui.draw_text(self.screen, "Очки", 18, (250, head_y), color=settings.COLOR_TEXT_DIM)
+            ui.draw_text(self.screen, "Уровень", 18, (322, head_y), color=settings.COLOR_TEXT_DIM)
 
             if not rows:
-                ui.draw_text(self.screen, "Результатов пока нет.", 24, (cx, 260),
+                ui.draw_text(self.screen, "Результатов пока нет.", 22, (cx, 230),
                              color=settings.COLOR_TEXT_DIM, center=True)
 
             medals = {1: (255, 215, 0), 2: (200, 200, 210), 3: (205, 140, 90)}
             for i, (player, score, level, length, played_at) in enumerate(rows, start=1):
-                y = head_y + 24 + i * 38
+                y = head_y + 18 + i * 32
                 # Подложка строки
-                row_rect = pygame.Rect(28, y - 6, settings.SCREEN_WIDTH - 56, 34)
+                row_rect = pygame.Rect(24, y - 5, settings.SCREEN_WIDTH - 48, 30)
                 bg = (30, 34, 48) if i % 2 == 0 else (24, 27, 39)
                 pygame.draw.rect(self.screen, bg, row_rect, border_radius=8)
 
                 num_color = medals.get(i, settings.COLOR_TEXT)
-                ui.draw_text(self.screen, str(i), 22, (44, y), color=num_color, bold=i <= 3)
-                ui.draw_text(self.screen, player[:14], 22, (96, y))
-                ui.draw_text(self.screen, str(score), 22, (300, y),
+                ui.draw_text(self.screen, str(i), 20, (38, y), color=num_color, bold=i <= 3)
+                ui.draw_text(self.screen, player[:13], 20, (78, y))
+                ui.draw_text(self.screen, str(score), 20, (250, y),
                              color=settings.COLOR_ACCENT, bold=True)
-                ui.draw_text(self.screen, str(level)[:12], 20, (392, y),
+                ui.draw_text(self.screen, str(level)[:10], 18, (322, y),
                              color=settings.COLOR_TEXT_DIM)
 
             ui.draw_text(self.screen, "ESC / клик — назад", 18,
